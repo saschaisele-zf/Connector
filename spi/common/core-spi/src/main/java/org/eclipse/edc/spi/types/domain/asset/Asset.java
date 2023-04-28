@@ -176,7 +176,7 @@ public class Asset extends Entity {
         }
 
         public B privateProperties(Map<String, Object> privateProperties) {
-            Objects.requireNonNull(privateProperties);
+            if (privateProperties == null) return self();
             entity.privateProperties.putAll(privateProperties);
             return self();
         }
