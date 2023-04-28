@@ -84,15 +84,19 @@ public class SqlAssetIndex extends AbstractSqlStore implements AssetIndex {
                 var findPropertyByIdSql = assetStatements.getFindPropertyByIdTemplate();
                 try (
                         var createdAtStream = executeQuery(connection, false, this::mapCreatedAt, selectAssetByIdSql, assetId);
-                        var propertiesStream = executeQuery(connection, false, this::mapPropertyResultSet, findPropertyByIdSql, assetId)
+                        var allPropertiesStream = executeQuery(connection, false, this::mapPropertyResultSet, findPropertyByIdSql, assetId)
                 ) {
                     var createdAt = createdAtStream.findFirst().orElse(0L);
-                    var assetProperties = propertiesStream
-                            .collect(toMap(AbstractMap.SimpleImmutableEntry::getKey, AbstractMap.SimpleImmutableEntry::getValue));
-
+                    var assetProperties = allPropertiesStream
+                            .filter(propWrapper -> !propWrapper.isPrivate())
+                            .collect(toMap(propWrapper -> propWrapper.getProperty().getKey(), propWrapper -> propWrapper.getProperty().getValue()));
+                    var assetPrivateProperties = allPropertiesStream
+                            .filter(propWrapper -> propWrapper.isPrivate())
+                            .collect(toMap(propWrapper -> propWrapper.getProperty().getKey(), propWrapper -> propWrapper.getProperty().getValue()));
                     return Asset.Builder.newInstance()
                             .id(assetId)
                             .properties(assetProperties)
+                            .privateProperties(assetPrivateProperties)
                             .createdAt(createdAt)
                             .build();
                 }
@@ -129,12 +133,24 @@ public class SqlAssetIndex extends AbstractSqlStore implements AssetIndex {
                 executeQuery(connection, insertDataAddressTemplate, assetId, toJson(dataAddress.getProperties()));
 
                 for (var property : asset.getProperties().entrySet()) {
-                    executeQuery(connection, assetStatements.getInsertPropertyTemplate(),
+                    executeQuery(connection,
+                            assetStatements.getInsertPropertyTemplate(),
                             assetId,
                             property.getKey(),
                             toJson(property.getValue()),
-                            property.getValue().getClass().getName());
+                            property.getValue().getClass().getName(),
+                            false);
                 }
+                for (var privateProperty : asset.getPrivateProperties().entrySet()) {
+                    executeQuery(connection,
+                            assetStatements.getInsertPropertyTemplate(),
+                            assetId,
+                            privateProperty.getKey(),
+                            toJson(privateProperty.getValue()),
+                            privateProperty.getValue().getClass().getName(),
+                            true);
+                }
+
                 return StoreResult.success();
             } catch (Exception e) {
                 throw new EdcPersistenceException(e);
@@ -187,7 +203,17 @@ public class SqlAssetIndex extends AbstractSqlStore implements AssetIndex {
                                 assetId,
                                 property.getKey(),
                                 toJson(property.getValue()),
-                                property.getValue().getClass().getName());
+                                property.getValue().getClass().getName(),
+                                false);
+                    }
+                    for (var privateProperty : asset.getPrivateProperties().entrySet()) {
+                        executeQuery(connection,
+                                assetStatements.getInsertPropertyTemplate(),
+                                assetId,
+                                privateProperty.getKey(),
+                                toJson(privateProperty.getValue()),
+                                privateProperty.getValue().getClass().getName(),
+                                true);
                     }
                     return StoreResult.success(asset);
                 }
@@ -242,13 +268,12 @@ public class SqlAssetIndex extends AbstractSqlStore implements AssetIndex {
         return resultSet.getInt(assetStatements.getCountVariableName());
     }
 
-    private AbstractMap.SimpleImmutableEntry<String, Object> mapPropertyResultSet(ResultSet resultSet) throws SQLException, ClassNotFoundException {
+    private SqlPropertyWrapper mapPropertyResultSet(ResultSet resultSet) throws SQLException, ClassNotFoundException {
         var name = resultSet.getString(assetStatements.getAssetPropertyColumnName());
         var value = resultSet.getString(assetStatements.getAssetPropertyColumnValue());
         var type = resultSet.getString(assetStatements.getAssetPropertyColumnType());
-
-
-        return new AbstractMap.SimpleImmutableEntry<>(name, fromPropertyValue(value, type));
+        var isPrivate = resultSet.getBoolean(assetStatements.getAssetPropertyColumnIsPrivate());
+        return new SqlPropertyWrapper(isPrivate, new AbstractMap.SimpleImmutableEntry<>(name, fromPropertyValue(value, type)));
     }
 
     /**
